@@ -9,6 +9,7 @@ library(stringr)
 library(descr)
 library(stringi)
 library(survey)
+library(srvyr)
 
 setwd("/Users/M276066/Documents/R projects/NIS/")
 
@@ -20,9 +21,6 @@ View(ctoc)
 
 #####
 # 290 kb - can read it in
-hospital <- read.csv("NIS_2021 (4)/ASCII files/NIS_2021_Hospital.ASC")
-str(hospital)
-View(hospital)
 
 # 64 characters long per row
 # 1 1-11 = DISCWT - NIS discharge weight - 
@@ -41,10 +39,11 @@ View(hospital)
 # 14 61-64 = YEAR - calendar year
 
 
-b <- read_fwf(file = "NIS_2021 (4)/ASCII files/NIS_2021_Hospital.ASC",
-         col_positions = fwf_cols(11, 2, 2, 2, 5, 2, 2, 4, 8, 4, 8, 4, 6, 4),
-         n_max = 10)
-b
+hospital <- read_fwf(file = "NIS_2021 (4)/ASCII files/NIS_2021_Hospital.ASC",
+         col_positions = fwf_cols(11, 2, 2, 2, 5, 2, 2, 4, 8, 4, 8, 4, 6, 4))
+colnames(hospital) <- c("DISCWT", "HOSP_BEDSIZE", "HOSP_DIVISION", "HOSP_LOCTEACH", "HOSP_NIS",
+                        "HOSP_REGION", "H-Control", "NIS_STRATUM", "N_DISC_U", "N-HOSP_U",
+                        "S_DISC_U", "S_HOSP_U", "TOTAL_DISC", "Year")
 
 
 #####
@@ -106,6 +105,8 @@ core <- read_fwf(
   na = missing_values)
 colnames(core) <- keyfile[,2]
 spec(core)
+core
+View(core[1:50,])
 
 # This function takes 5-8 secs
 readinICD <- function(code){ 
@@ -123,6 +124,7 @@ readinICD <- function(code){
     core$I10_DX22 == code | core$I10_DX23 == code |
     core$I10_DX24 == code | core$I10_DX25 == code )
 }
+readinICD("I421")
 
 # Sub in a second ICD code
 readinICDadditional <- function(icdcode, dataset){ 
@@ -184,20 +186,153 @@ parcepcspattern(hcmvt,"0258")
 parcepcspattern(hcm,"0258")
 core_ablation <- parcepcspattern(core,"0258")
 
+# Function - adds a dummy variable for an ICD code to core
+add_dummy_variable <- function(dataset, code, new_variable_name) {
+  columns <- c("I10_DX1", "I10_DX2", "I10_DX3", "I10_DX4", "I10_DX5", "I10_DX6",
+               "I10_DX7", "I10_DX8", "I10_DX9","I10_DX10", "I10_DX11", "I10_DX12",
+               "I10_DX13", "I10_DX14", "I10_DX15","I10_DX16", "I10_DX17", "I10_DX18",
+               "I10_DX19", "I10_DX20", "I10_DX21","I10_DX22", "I10_DX23", "I10_DX24",
+               "I10_DX25")
+  any_column_contains_code <- apply(dataset[, columns], 1, function(x) any(x == code))
+  dataset[[new_variable_name]] <- ifelse(any_column_contains_code, 1, 0)
+  return(dataset)
+}
+
+add_dummy_dx1 <- function(dataset, code, new_variable_name) {
+  columns <- c("I10_DX1")
+  any_column_contains_code <- apply(dataset[, columns], 1, function(x) any(x == code))
+  dataset[[new_variable_name]] <- ifelse(any_column_contains_code, 1, 0)
+  return(dataset)
+}
+
+# Example usage:
+core_with_hcm <- add_dummy_variable(core, "I421", "hcm")
+core_hcm_sarcoid <- add_dummy_variable(core_with_hcm, "D8685", "sarcoid")
+
+corehcmcovid <- add_dummy_variable(core_with_hcm, "U071", "covid")
+freq(corehcmcovid$covid)
+
+View(core_with_hcm[1:20,])
+freq(core_with_hcm$hcm)
 
 ## Survey ##
 ## Not automized ##
 # Working survey element - to get national estimates
-coresvy <- svydesign(ids = ~core$HOSP_NIS, 
-                     #strata = NULL,
+coresvy <- svydesign(ids = ~as.factor(core$HOSP_NIS), 
                      strata = as.factor(core$NIS_STRATUM), 
                      weight = ~core$DISCWT, 
                      data = core)
 
 coresvy
-svy
-svymean(x = ~DIED, design = coresvy,na.rm = TRUE)
-svymean(x = ~LOS, design = coresvy,na.rm = TRUE)
+
+
+corehcmsvy <- svydesign(ids = ~as.factor(core_with_hcm$HOSP_NIS), 
+                     strata = as.factor(core_with_hcm$NIS_STRATUM), 
+                     weight = ~core_with_hcm$DISCWT, 
+                     data = core_with_hcm)
+
+corehcmsvy
+
+
+a <- svytotal(x = ~hcm, design = corehcmsvy,na.rm = FALSE)
+b <- svyvar(x = ~hcm, design = corehcmsvy,na.rm = TRUE)
+c <- svymean(x = ~hcm, design = corehcmsvy,na.rm = TRUE)
+
+
+svychisq()
+
+?svychisq
+
+
+svyby(~hcm, design = corehcmsvy,na.rm = FALSE)
+?svyb
+
+
+covid <- subset(x = core, subset = core$I10_DX1 == "U071")
+dim(covid)
+covidany <- readinICD("U071")
+dim(covidany)
+hcmonly <- subset(x = core, subset = core$I10_DX1 == "I421")
+dim(hcmonly)
+coredx1 <- add_dummy_dx1(core_with_hcm, "I421", "hcmdx1")
+coredx1 <- add_dummy_dx1(coredx1, "U071", "coviddx1")
+# test survey
+coretestsvy <- svydesign(ids = ~as.factor(coredx1$HOSP_NIS), 
+                         strata = as.factor(coredx1$NIS_STRATUM), 
+                         weight = ~coredx1$DISCWT, 
+                         data = coredx1)
+d <- svytotal(x = ~hcmdx1, design = coretestsvy,na.rm = FALSE)
+e <- svytotal(x = ~coviddx1, design = coretestsvy,na.rm = FALSE)
+
+
+coretestsvy <- svydesign(ids = ~as.factor(corehcmcovid$HOSP_NIS), 
+                         strata = as.factor(corehcmcovid$NIS_STRATUM), 
+                         weight = ~corehcmcovid$DISCWT, 
+                         data = corehcmcovid)
+
+a <- svytotal(x = ~hcm, design = coretestsvy,na.rm = FALSE)
+b <- svytotal(x = ~covid, design = coretestsvy,na.rm = FALSE)
+
+
+
+
+
+
+
+
+
+
+
+# This works. need to now infer things about subgroups in here
+core %>%
+  count(DIED)
+str(core)
+View(core[1:50,])
+
+
+tab_race <- core %>% group_by(RACE) %>%
+  summarize(Freq = n()) %>% mutate(Prop = Freq / sum(Freq)) %>%
+  arrange(desc(Prop))
+tab_race
+
+# unweighted distribution of race
+ggplot(data = tab_race, aes(x = RACE, y = Prop)) +
+  geom_col() +
+  coord_flip() +
+  scale_x_discrete(limits = tab_race$RACE)
+
+tab_w_race <- svytable(~RACE,design = coresvy) %>%
+  as.data.frame() %>%
+  mutate(Prop = Freq / sum(Freq)) %>%
+  arrange(desc(Prop))
+tab_w_race
+
+# Survey weighted distribution of race
+ggplot(data = tab_w_race, mapping = aes(x = RACE, y = Prop)) +
+  geom_col() +
+  coord_flip() +
+  scale_x_discrete(limits = tab_w_race$RACE)
+
+
+
+
+
+core %>%
+  summarize(n_hat = sum())
+
+
+
+
+glimpse(coresvy)
+summary(coresvy)
+
+ggplot(data = core, aes(DISCWT)) +
+  geom_histogram()
+ggplot(data = core, aes(HOSP_NIS)) +
+  geom_histogram()
+
+
+
 
 
 # Can make comparisons of t tests for sex, age, race, weekend, elective, 
@@ -209,9 +344,30 @@ colnames(core)
 ## Like HCM with VT, those with ablation, etc ##
 
 
-?svyby
-svyby(formula = )
 
+
+
+
+# Filter and summarize by groups
+anes_des %>%
+  filter(!is.na(VotedPres2016), !is.na(VotedPres2020)) %>%
+  group_by(VotedPres2016, VotedPres2020) %>%
+  summarize(
+    p=survey_mean(),
+    N=survey_total(),
+    n=unweighted(n()), 
+    .groups="drop"
+  )
+
+# Proportions with CI
+anes_des %>%
+  group_by(interact(Income7, VotedPres2016, VotedPres2020)) %>% 
+  summarize(
+    pd=survey_prop(vartype="ci") %>% round(4),
+    pl=survey_prop(proportion = TRUE, prop_method="logit", vartype="ci") %>% round(4),
+    px=survey_prop(proportion = TRUE, prop_method="likelihood", vartype="ci") %>% round(4)
+  ) %>% select(Income7, VotedPres2016, VotedPres2020, contains("_")) %>%
+  DT::datatable(fillContainer = FALSE, options = list(pageLength = 4))
 
 
 
@@ -238,96 +394,6 @@ hcmvt
 dim(hcmvt)
 freq(hcmvt$DIED)
 freq(hcmvt$RACE)
-
-# Survey of HCM
-hcmvtsvy <- svydesign(ids = ~hcmvt$HOSP_NIS, 
-                 #strata = NULL,
-                 strata = as.factor(hcmvt$NIS_STRATUM), 
-                 weight = ~hcmvt$DISCWT, 
-                 data = hcmvt)
-
-hcmvtsvy
-
-freq(hcmvt$DIED)
-freq(hcmvt$HOSP_NIS)
-freq(hcmvt$NIS_STRATUM)
-freq(hcmvt$DISCWT)
-
-
-
-# Estimates for things in HCM and VT
-svymean(x = ~DIED, design = hcmvtsvy, na.rm = TRUE)
-svymean(x = ~LOS, design = hcmvtsvy, na.rm = TRUE)
-
-
-# How do I set a national estimate from a very specific subset of NIS???
-
-
-
-
-
-
-
-
-
-
-
-
-# Assuming 'hcmvtsvy' is your survey design object with incorrect PSU and stratum variables
-
-# Correct the PSU and stratum variables in the survey design object
-hcmvtsvy <- update(hcmvtsvy, ids = ~correct_psu_variable, strata = ~correct_stratum_variable)
-
-# Re-run svymean() with the updated survey design object
-mean_died <- svymean(x = ~DIED, design = hcmvtsvy, na.rm = TRUE)
-
-
-
-
-
-
-
-
-
-
-
-
-# example from internet
-data(api)
-api_design <- svydesign(id = ~1, strata = ~stype, weights = ~pw, data = apistrat, fpc = ~fpc) 
-svymean(~enroll, design = api_design) 
-svytable(~stype + meals, design = api_design)
-
-
-
-
-svymean(x = svy$variables, svy3
-        ) # Percentage of survey per year 
-svyby(~myvar, ~year, svy, svymean) # Mean of myvar by year
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -368,6 +434,25 @@ coretest <- read_fwf(
   n_max = 100)
 colnames(coretest) <- keyfile[,2]
 View(coretest)
+
+
+# CCSR function
+ccsr <- read.csv(file = "NIS_2021 (4)/CCSR.csv")
+ccsr <- ccsr[-c(1:5),1:4]
+colnames(ccsr) <- c("ICD10 code", "ICD Description", "CCSR code", "CCSR Description")
+View(ccsr)
+
+icdtoccsr <- function(ICD10code) {
+  match_idx <- which(ccsr[, 1] == ICD10code)
+  if (length(match_idx) > 0) {
+    return(ccsr[match_idx, 3])
+  } else {
+    return(NA)
+  }
+}
+
+icdtoccsr("A009")
+
 
 #####
 # Dx file is 6gb. Can read it in - takes even longer
